@@ -158,6 +158,11 @@ def _camera_worker(cam_cfg: dict, det_cfg: dict, out_cfg: dict,
         frame_count += 1
         fps_frames  += 1
 
+        # 第一幀存檔確認內容（debug 用，確認後可移除）
+        if frame_count == 1:
+            cv2.imwrite('/tmp/debug_frame_raw.jpg', frame)
+            log("INFO", f"{tag} 第一幀已儲存 /tmp/debug_frame_raw.jpg  shape={frame.shape} max={frame.max()}")
+
         # FPS 每 30 幀更新一次
         if fps_frames == 30:
             fps_val    = 30 / (time.monotonic() - fps_t0)
