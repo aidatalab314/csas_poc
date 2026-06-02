@@ -1,0 +1,16 @@
+rules:
+  - event_type: zone_intrusion
+    severity: high
+    description: "人員進入限制區域"
+
+  - event_type: line_crossing
+    severity: high
+    description: "人員跨越警戒線"
+
+  - event_type: dwell_alert
+    severity: medium
+    description: "人員在區域內異常滯留"
+
+  - event_type: abandoned_object
+    severity: high
+    description: "疑似遺留物偵測"

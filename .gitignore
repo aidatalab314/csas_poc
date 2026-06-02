@@ -1,0 +1,26 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.env
+.venv/
+venv/
+
+# 模型權重
+*.pt
+*.pth
+*.onnx
+*.engine
+
+# 資料（保留目錄）
+data/snapshots/*
+data/logs/*
+data/demo_videos/*
+!data/snapshots/.gitkeep
+!data/logs/.gitkeep
+!data/demo_videos/.gitkeep
+
+models/person_detection/*.pt
+models/abandoned_object/*.pt
+models/fire_smoke/*.pt
+
+.DS_Store
