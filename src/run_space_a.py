@@ -128,6 +128,11 @@ def _camera_worker(cam_cfg: dict, det_cfg: dict, out_cfg: dict,
 
     log("INFO", f"{tag} zones={len(roi.zones)}, lines={len(roi.lines)}")
 
+    # CUDA warmup（在進入主迴圈前完成，避免第一幀卡住 queue）
+    log("INFO", f"{tag} CUDA warmup...")
+    detector.detect(np.zeros((4, 4, 3), dtype=np.uint8))
+    log("INFO", f"{tag} warmup 完成，開始接收畫面")
+
     # ── 優化②：frame skip ────────────────────────────────────────────────────
     skip_n        = max(1, det_cfg.get("inference_skip_frames", 1))
     frame_count   = 0
