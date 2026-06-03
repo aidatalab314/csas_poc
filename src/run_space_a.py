@@ -85,8 +85,9 @@ def _make_panel(frame: np.ndarray, label: str) -> np.ndarray:
 
 def _camera_worker(cam_cfg: dict, det_cfg: dict, out_cfg: dict,
                    space_a_cfg: dict,
-                   frame_q: queue.Queue,
-                   stop: threading.Event):
+                   frame_q: "queue.Queue | None",
+                   stop: threading.Event,
+                   mode: str = "dev"):
     camera_id = cam_cfg["id"]
     tag = f"[Space A | {camera_id}]"
 
@@ -96,22 +97,22 @@ def _camera_worker(cam_cfg: dict, det_cfg: dict, out_cfg: dict,
     speed_px        = _get(cam_cfg, space_a_cfg, "speed_alert_px_per_frame", 20)
     speed_count     = _get(cam_cfg, space_a_cfg, "speed_alert_person_count", 2)
 
-    log("INFO", f"{tag} 啟動")
+    log("INFO", f"{tag} 啟動 [mode={mode}]")
 
     reader = RTSPReader(cam_cfg.get("source"), fallback=cam_cfg.get("fallback"))
     if not reader.open():
-        frame_q.put(_DONE)
+        if frame_q is not None:
+            frame_q.put(_DONE)
         return
 
     pre = Preprocessor.from_config(det_cfg.get("preprocess", {}))
     if not pre.is_noop:
         log("INFO", f"{tag} 前處理已啟用")
 
-    # ── 優化①：單次 YOLO 推論同時偵測人員與物件 ─────────────────────────────
     detector = Detector(
         det_cfg["model"], conf=det_cfg.get("conf", 0.4),
         device=det_cfg.get("device", "cpu"),
-        target_classes=CLASS_PERSON + CLASS_OBJECTS,   # 一次推論，結果再拆分
+        target_classes=CLASS_PERSON + CLASS_OBJECTS,
         imgsz=det_cfg.get("imgsz", 640),
         preprocessor=pre,
     )
@@ -128,14 +129,12 @@ def _camera_worker(cam_cfg: dict, det_cfg: dict, out_cfg: dict,
 
     log("INFO", f"{tag} zones={len(roi.zones)}, lines={len(roi.lines)}")
 
-    # CUDA warmup（用實際解析度觸發完整 JIT 編譯，避免第一幀卡住 queue）
     w, h = reader.get_size()
     log("INFO", f"{tag} CUDA warmup ({w}×{h})...")
     _t0 = time.monotonic()
     detector.detect(np.zeros((h, w, 3), dtype=np.uint8))
     log("INFO", f"{tag} warmup 完成 ({time.monotonic()-_t0:.1f}s)，開始接收畫面")
 
-    # ── 優化②：frame skip ────────────────────────────────────────────────────
     skip_n        = max(1, det_cfg.get("inference_skip_frames", 1))
     frame_count   = 0
     cached_persons: list[dict] = []
@@ -143,7 +142,6 @@ def _camera_worker(cam_cfg: dict, det_cfg: dict, out_cfg: dict,
     tracked_persons: dict = {}
     tracked_objects: dict = {}
 
-    # ── FPS 計量 ──────────────────────────────────────────────────────────────
     fps_t0     = time.monotonic()
     fps_frames = 0
     fps_val    = 0.0
@@ -158,41 +156,24 @@ def _camera_worker(cam_cfg: dict, det_cfg: dict, out_cfg: dict,
         frame_count += 1
         fps_frames  += 1
 
-        # 第一幀存檔確認內容（debug 用，確認後可移除）
-        if frame_count == 1:
-            cv2.imwrite('/tmp/debug_frame_raw.jpg', frame)
-            log("INFO", f"{tag} 第一幀已儲存 /tmp/debug_frame_raw.jpg  shape={frame.shape} max={frame.max()}")
-
         # FPS 每 30 幀更新一次
         if fps_frames == 30:
             fps_val    = 30 / (time.monotonic() - fps_t0)
             fps_t0     = time.monotonic()
             fps_frames = 0
 
-        roi.draw(frame)
-
         # ── 推論（skip 非推論幀，沿用上一次結果）────────────────────────────
         if frame_count % skip_n == 0:
-            all_dets      = detector.detect(frame)
+            all_dets       = detector.detect(frame)
             cached_persons = [d for d in all_dets if d["class_id"] == 0]
             cached_objects = [d for d in all_dets if d["class_id"] in (24, 26, 28)]
+            tracked_persons = person_tracker.update(
+                [d for d in cached_persons if roi.is_in_any_zone(d["cx"], d["cy"])])
+            tracked_objects = object_tracker.update(
+                [d for d in cached_objects if roi.is_in_any_zone(d["cx"], d["cy"])])
 
-            person_in_roi = [d for d in cached_persons
-                             if roi.is_in_any_zone(d["cx"], d["cy"])]
-            object_in_roi = [d for d in cached_objects
-                             if roi.is_in_any_zone(d["cx"], d["cy"])]
-
-            tracked_persons = person_tracker.update(person_in_roi)
-            tracked_objects = object_tracker.update(object_in_roi)
-        else:
-            person_in_roi = [d for d in cached_persons
-                             if roi.is_in_any_zone(d["cx"], d["cy"])]
-            object_in_roi = [d for d in cached_objects
-                             if roi.is_in_any_zone(d["cx"], d["cy"])]
-
-        draw_detections(frame, person_in_roi, color=(0, 255, 0))
-        draw_detections(frame, object_in_roi, color=(0, 165, 255))
-        draw_tracked(frame, tracked_persons)
+        person_in_roi = [d for d in cached_persons if roi.is_in_any_zone(d["cx"], d["cy"])]
+        object_in_roi = [d for d in cached_objects if roi.is_in_any_zone(d["cx"], d["cy"])]
 
         # ── 計算各 zone 人數 ──────────────────────────────────────────────────
         if roi.zones:
@@ -208,15 +189,12 @@ def _camera_worker(cam_cfg: dict, det_cfg: dict, out_cfg: dict,
             zone_counts = {"full_frame": len(tracked_persons)}
             people_str = f"People:{len(tracked_persons)}"
 
-        # 狀態列：各 zone 人數 + FPS + skip 模式
         skip_label = f"  skip:{skip_n}" if skip_n > 1 else ""
         status = f"{people_str}  FPS:{fps_val:.1f}{skip_label}"
-        cv2.putText(frame, status, (10, frame.shape[0] - 15),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
 
         active_alerts: list[str] = []
 
-        # 規則 1：人流密度（逐 zone 判斷，使用實際 zone 標籤）
+        # 規則 1：人流密度
         for zone_label, count in zone_counts.items():
             if count >= crowd_threshold:
                 events.trigger("crowd_density_alert", zone_label, "medium", 1.0, frame)
@@ -228,11 +206,12 @@ def _camera_worker(cam_cfg: dict, det_cfg: dict, out_cfg: dict,
             dwell  = obj["dwell_seconds"]
             label  = obj["det"].get("label", "object")
             conf   = obj["det"].get("conf", 0.5)
-            x1, y1, x2, y2 = obj["det"]["bbox"]
-            color = (0, 50, 255) if dwell >= abandoned_secs else (0, 165, 255)
-            cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-            cv2.putText(frame, f"{label} {dwell:.0f}s",
-                        (x1, y1 - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+            if mode == "dev":
+                x1, y1, x2, y2 = obj["det"]["bbox"]
+                color = (0, 50, 255) if dwell >= abandoned_secs else (0, 165, 255)
+                cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+                cv2.putText(frame, f"{label} {dwell:.0f}s",
+                            (x1, y1 - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
             if dwell >= abandoned_secs:
                 if _nearest_person_dist(cx, cy, person_in_roi) > proximity_px:
                     zone_labels = roi.get_zone_labels(cx, cy) or ["zone_a"]
@@ -247,13 +226,13 @@ def _camera_worker(cam_cfg: dict, det_cfg: dict, out_cfg: dict,
             prev = prev_pos.get(obj_id)
             if prev and math.hypot(cx - prev[0], cy - prev[1]) > speed_px:
                 fast.append(obj_id)
-                cv2.arrowedLine(frame, prev, (cx, cy), (0, 0, 255), 2)
+                if mode == "dev":
+                    cv2.arrowedLine(frame, prev, (cx, cy), (0, 0, 255), 2)
             prev_pos[obj_id] = (cx, cy)
         for gone_id in list(prev_pos):
             if gone_id not in tracked_persons:
                 del prev_pos[gone_id]
         if len(fast) >= speed_count:
-            # 取快速移動者所在的 zone 標籤（取聯集）
             fast_zones: set[str] = set()
             for obj_id in fast:
                 if obj_id in tracked_persons:
@@ -264,22 +243,38 @@ def _camera_worker(cam_cfg: dict, det_cfg: dict, out_cfg: dict,
                 events.trigger("abnormal_movement", zone_label, "medium", 0.8, frame)
             active_alerts.append(f"FAST MOVE: {len(fast)} persons")
 
+        # ── 作業模式：定期 log 狀態，警報即時輸出 ────────────────────────────
+        if mode == "op":
+            if fps_frames == 0:          # 每 30 幀 log 一次狀態
+                log("INFO", f"{tag} {status}")
+            for alert in active_alerts:
+                log("WARN", f"{tag} ALERT: {alert}")
+            continue
+
+        # ── 開發者模式：繪圖 + 送往顯示 queue ────────────────────────────────
+        roi.draw(frame)
+        draw_detections(frame, person_in_roi, color=(0, 255, 0))
+        draw_detections(frame, object_in_roi, color=(0, 165, 255))
+        draw_tracked(frame, tracked_persons)
+        cv2.putText(frame, status, (10, frame.shape[0] - 15),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
         if active_alerts:
             draw_alert_bar(frame, active_alerts[0])
-
-        try:
-            frame_q.put_nowait(frame)
-        except queue.Full:
-            pass
+        if frame_q is not None:
+            try:
+                frame_q.put_nowait(frame.copy())
+            except queue.Full:
+                pass
 
     reader.release()
-    frame_q.put(_DONE)          # 保證 sentinel 可送達（blocking）
+    if frame_q is not None:
+        frame_q.put(_DONE)
     log("INFO", f"{tag} 已停止")
 
 
 # ── 主函式 ────────────────────────────────────────────────────────────────────
 
-def run(camera_ids: list[str] | None = None, source_override=None):
+def run(camera_ids: list[str] | None = None, source_override=None, mode: str = "dev"):
     cfg         = load_yaml(CONFIG_PATH)
     det_cfg     = cfg["detector"]
     out_cfg     = cfg["output"]
@@ -295,14 +290,12 @@ def run(camera_ids: list[str] | None = None, source_override=None):
         log("ERROR", f"cameras.yaml 中找不到：{camera_ids}")
         return
 
-    # 單台模式允許 --source 覆蓋
     if source_override and len(valid_ids) == 1:
         cid = valid_ids[0]
         cam_map[cid] = dict(cam_map[cid])
         cam_map[cid]["source"]  = source_override
         cam_map[cid].pop("fallback", None)
 
-    # ── 啟動前：自動 ROI 檢查（主執行緒，可開 cv2 視窗）─────────────────────
     for cid in valid_ids:
         ensure_roi(cid,
                    source=cam_map[cid].get("source"),
@@ -311,28 +304,41 @@ def run(camera_ids: list[str] | None = None, source_override=None):
                    scene_name="Space A",
                    expected_types=["zone"])
 
-    # ── 建立 frame queue 與 stop event ───────────────────────────────────────
-    frame_qs: dict[str, queue.Queue] = {
-        cid: queue.Queue(maxsize=4) for cid in valid_ids
+    # 作業模式不需要 frame queue；開發者模式建立 queue
+    frame_qs: dict[str, queue.Queue | None] = {
+        cid: (queue.Queue(maxsize=4) if mode == "dev" else None)
+        for cid in valid_ids
     }
     stop = threading.Event()
 
-    # ── 啟動 camera worker threads ───────────────────────────────────────────
     threads: list[threading.Thread] = []
     for cid in valid_ids:
         t = threading.Thread(
             target=_camera_worker,
             args=(cam_map[cid], det_cfg, out_cfg, space_a_cfg,
-                  frame_qs[cid], stop),
+                  frame_qs[cid], stop, mode),
             name=f"SpaceA-{cid}",
             daemon=True,
         )
         t.start()
         threads.append(t)
 
-    log("INFO", f"[Space A] 執行中：{valid_ids}  |  按 Q / ESC 結束")
+    # ── 作業模式：無畫面，等待 Ctrl+C ────────────────────────────────────────
+    if mode == "op":
+        log("INFO", f"[Space A] 作業模式執行中：{valid_ids}  |  按 Ctrl+C 結束")
+        try:
+            for t in threads:
+                t.join()
+        except KeyboardInterrupt:
+            log("INFO", "[Space A] 使用者中止")
+            stop.set()
+            for t in threads:
+                t.join(timeout=5)
+        log("INFO", "[Space A] 所有攝影機已停止")
+        return
 
-    # ── 主執行緒：split-screen 顯示 ──────────────────────────────────────────
+    # ── 開發者模式：split-screen 顯示 ────────────────────────────────────────
+    log("INFO", f"[Space A] 開發者模式執行中：{valid_ids}  |  按 Q / ESC 結束")
     WIN_TITLE = "CSAS PoC — Space A"
     latest: dict[str, np.ndarray | None] = {cid: None for cid in valid_ids}
     finished: set[str] = set()
@@ -341,7 +347,6 @@ def run(camera_ids: list[str] | None = None, source_override=None):
         for cid in valid_ids:
             if cid in finished:
                 continue
-            # 排空 queue，只保留最新一幀
             last_frame = None
             got_done   = False
             while True:
@@ -350,7 +355,7 @@ def run(camera_ids: list[str] | None = None, source_override=None):
                     if item is _DONE:
                         got_done = True
                         break
-                    last_frame = item          # 持續取直到 queue 空
+                    last_frame = item
                 except queue.Empty:
                     break
 
@@ -359,7 +364,6 @@ def run(camera_ids: list[str] | None = None, source_override=None):
             if got_done:
                 finished.add(cid)
 
-        # 組合 split-screen
         panels = [
             _make_panel(latest[cid], cid)
             for cid in valid_ids
@@ -392,6 +396,10 @@ def main():
         "--source", default=None,
         help="覆蓋影像來源（僅限單台）：影片路徑 / RTSP URL / webcam index",
     )
+    parser.add_argument(
+        "--mode", default="dev", choices=["dev", "op"],
+        help="dev：顯示畫面（開發/展示用）；op：無畫面，僅 log 輸出（部署用）",
+    )
     args = parser.parse_args()
 
     camera_ids = [c.strip() for c in args.cameras.split(",")]
@@ -401,7 +409,7 @@ def main():
         log("WARN", "--source 僅支援單台模式，多台請設定 cameras.yaml")
         src = None
 
-    run(camera_ids=camera_ids, source_override=src)
+    run(camera_ids=camera_ids, source_override=src, mode=args.mode)
 
 
 if __name__ == "__main__":
