@@ -24,9 +24,10 @@ def _resolve_source(src):
 
 
 def _build_gst_rtsp_pipeline(rtsp_url: str) -> str:
+    # 攝影機串流為 H.265（HEVC），使用 rtph265depay + nvv4l2decoder 硬體解碼
     return (
         f"rtspsrc location={rtsp_url} latency=0 ! "
-        "rtph264depay ! h264parse ! nvv4l2decoder ! "
+        "rtph265depay ! h265parse ! nvv4l2decoder ! "
         "nvvidconv ! video/x-raw,format=BGRx ! "
         "videoconvert ! video/x-raw,format=BGR ! "
         "appsink drop=true max-buffers=1 sync=false"
