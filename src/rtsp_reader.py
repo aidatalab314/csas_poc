@@ -4,25 +4,41 @@ from src.utils import log
 
 
 def _is_file_source(src) -> bool:
-    """判斷來源是否為本地檔案路徑（非 RTSP / 非整數 webcam index）。"""
     if isinstance(src, int):
         return False
     s = str(src)
     return not s.startswith("rtsp://") and not s.startswith("rtmp://") and not s.isdigit()
 
 
+def _is_rtsp_source(src) -> bool:
+    if isinstance(src, int):
+        return False
+    s = str(src)
+    return s.startswith("rtsp://") or s.startswith("rtmp://")
+
+
 def _resolve_source(src):
-    """將字串 webcam index 轉為 int，其餘原樣回傳。"""
     if isinstance(src, int):
         return src
     return int(src) if str(src).isdigit() else src
 
 
+def _build_gst_rtsp_pipeline(rtsp_url: str) -> str:
+    return (
+        f"rtspsrc location={rtsp_url} latency=0 ! "
+        "rtph264depay ! h264parse ! nvv4l2decoder ! "
+        "nvvidconv ! video/x-raw,format=BGRx ! "
+        "videoconvert ! video/x-raw,format=BGR ! "
+        "appsink drop=1 max-buffers=1 sync=false"
+    )
+
+
 class RTSPReader:
     """
     影像來源讀取器。
-    優先嘗試 source，失敗時自動切換 fallback（本地影片或 USB cam）。
-    本地檔案來源在嘗試開啟前先確認是否存在，並給出明確提示。
+    RTSP 來源優先使用 GStreamer nvv4l2decoder 硬體解碼（Jetson），
+    失敗時自動 fallback 到 FFmpeg 軟體解碼（Mac / 開發環境）。
+    本地檔案 / webcam 直接使用 cv2.VideoCapture 預設 backend。
     """
 
     def __init__(self, source, fallback=None):
@@ -50,7 +66,6 @@ class RTSPReader:
     def _try_open(self, src, label: str) -> bool:
         src = _resolve_source(src)
 
-        # 本地檔案：先確認存在
         if _is_file_source(src):
             p = Path(str(src))
             if not p.exists():
@@ -60,12 +75,24 @@ class RTSPReader:
         if self.cap:
             self.cap.release()
 
+        # RTSP：優先嘗試 GStreamer 硬體解碼（Jetson nvv4l2decoder）
+        # Mac 沒有 nvv4l2decoder，VideoCapture 會回傳 isOpened()=False，自動走 fallback
+        if _is_rtsp_source(src):
+            gst_pipe = _build_gst_rtsp_pipeline(str(src))
+            cap = cv2.VideoCapture(gst_pipe, cv2.CAP_GSTREAMER)
+            if cap.isOpened():
+                self.cap = cap
+                self.active_source = src
+                log("INFO", f"已開啟 {label}（GStreamer 硬體解碼）: {src}")
+                return True
+            cap.release()
+            log("WARN", f"{label}: GStreamer 不可用，改用 FFmpeg: {src}")
+
+        # 一般來源 或 GStreamer 失敗時 fallback（FFmpeg）
         self.cap = cv2.VideoCapture(src)
         if self.cap.isOpened():
             self.active_source = src
-            # RTSP：將解碼 buffer 縮到 1 幀，避免舊幀堆積造成顯示延遲
-            if isinstance(src, str) and (src.startswith("rtsp://") or
-                                          src.startswith("rtmp://")):
+            if _is_rtsp_source(src):
                 self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
             log("INFO", f"已開啟 {label}: {src}")
             return True
