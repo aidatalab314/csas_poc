@@ -29,7 +29,7 @@ def _build_gst_rtsp_pipeline(rtsp_url: str) -> str:
         "rtph264depay ! h264parse ! nvv4l2decoder ! "
         "nvvidconv ! video/x-raw,format=BGRx ! "
         "videoconvert ! video/x-raw,format=BGR ! "
-        "appsink drop=1 max-buffers=1 sync=false"
+        "appsink drop=true max-buffers=1 sync=false"
     )
 
 
