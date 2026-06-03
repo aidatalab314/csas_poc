@@ -46,6 +46,7 @@ class RTSPReader:
         self.fallback = fallback
         self.cap = None
         self.active_source = None
+        self._prefetched = None
 
     def open(self) -> bool:
         if self._try_open(self.source, label="主要來源"):
@@ -105,6 +106,10 @@ class RTSPReader:
     def read(self):
         if self.cap is None:
             return False, None
+        # 若 get_size() 已預讀過第一幀，先回傳它
+        if self._prefetched is not None:
+            frame, self._prefetched = self._prefetched, None
+            return True, frame
         return self.cap.read()
 
     def is_opened(self) -> bool:
@@ -116,7 +121,14 @@ class RTSPReader:
     def get_size(self) -> tuple[int, int]:
         w = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         h = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        return w, h
+        if w > 0 and h > 0:
+            return w, h
+        # GStreamer live source：caps 需等第一幀才協商，預讀一幀取得真實尺寸
+        ret, frame = self.cap.read()
+        if ret and frame is not None:
+            self._prefetched = frame
+            return frame.shape[1], frame.shape[0]
+        return 640, 640  # fallback
 
     def release(self):
         if self.cap:
