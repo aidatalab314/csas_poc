@@ -2,6 +2,25 @@
 
 ---
 
+## Ubuntu x86：RTSP 連線後 FFmpeg fallback 遭 Camera 拒絕（Connection refused）
+
+**症狀：** GStreamer 失敗後，FFmpeg 立即出現 `Connection refused`，但 `ping` 和 `nc -zv 192.168.6.90 554` 都正常
+
+**原因：** `nvv4l2decoder` 是 Jetson 專屬 plugin，在 Ubuntu x86 上不存在。GStreamer 嘗試建立 pipeline 時，`rtspsrc` 已成功連上攝影機並開啟 RTSP session，但 pipeline 在 `nvv4l2decoder` 階段失敗。攝影機的 session slot 被佔住，FFmpeg 接著連線時被攝影機拒絕。
+
+**解法（已修入 `rtsp_reader.py`）：** 改為三段 fallback：
+1. GStreamer HW（`nvv4l2decoder`，Jetson）
+2. GStreamer SW（`avdec_h265`，Ubuntu x86）→ pipeline 直接成功，不留 stale session
+3. FFmpeg（Mac / 無 GStreamer）
+
+**前提：Ubuntu 需安裝 `gstreamer1.0-libav`：**
+```bash
+sudo apt install -y gstreamer1.0-libav
+gst-inspect-1.0 avdec_h265 | head -3   # 確認已安裝
+```
+
+---
+
 ## GStreamer：RTSP 串流無法開啟 / 畫面全黑（H.265 pipeline 設定錯誤）
 
 **症狀：** GStreamer pipeline `isOpened()=False`，或開啟後畫面全黑
