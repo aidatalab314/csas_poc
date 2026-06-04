@@ -23,12 +23,20 @@ def _resolve_source(src):
     return int(src) if str(src).isdigit() else src
 
 
-def _build_gst_rtsp_pipeline(rtsp_url: str) -> str:
-    # 攝影機串流為 H.265（HEVC），使用 rtph265depay + nvv4l2decoder 硬體解碼
+def _build_gst_rtsp_pipeline(rtsp_url: str, hw_accel: bool = True) -> str:
+    if hw_accel:
+        # Jetson：nvv4l2decoder H.265 硬體解碼
+        return (
+            f"rtspsrc location={rtsp_url} latency=0 ! "
+            "rtph265depay ! h265parse ! nvv4l2decoder ! "
+            "nvvidconv ! video/x-raw,format=BGRx ! "
+            "videoconvert ! video/x-raw,format=BGR ! "
+            "appsink drop=true max-buffers=1 sync=false"
+        )
+    # Ubuntu x86 / 非 Jetson：avdec_h265 軟體解碼（需 gstreamer1.0-libav）
     return (
         f"rtspsrc location={rtsp_url} latency=0 ! "
-        "rtph265depay ! h265parse ! nvv4l2decoder ! "
-        "nvvidconv ! video/x-raw,format=BGRx ! "
+        "rtph265depay ! h265parse ! avdec_h265 ! "
         "videoconvert ! video/x-raw,format=BGR ! "
         "appsink drop=true max-buffers=1 sync=false"
     )
@@ -37,8 +45,10 @@ def _build_gst_rtsp_pipeline(rtsp_url: str) -> str:
 class RTSPReader:
     """
     影像來源讀取器。
-    RTSP 來源優先使用 GStreamer nvv4l2decoder 硬體解碼（Jetson），
-    失敗時自動 fallback 到 FFmpeg 軟體解碼（Mac / 開發環境）。
+    RTSP 來源依序嘗試：
+      1. GStreamer HW（Jetson nvv4l2decoder）
+      2. GStreamer SW（Ubuntu x86 avdec_h265）
+      3. FFmpeg（Mac / 無 GStreamer 環境）
     本地檔案 / webcam 直接使用 cv2.VideoCapture 預設 backend。
     """
 
@@ -77,17 +87,17 @@ class RTSPReader:
         if self.cap:
             self.cap.release()
 
-        # RTSP：優先嘗試 GStreamer 硬體解碼（Jetson nvv4l2decoder）
-        # Mac 沒有 nvv4l2decoder，VideoCapture 會回傳 isOpened()=False，自動走 fallback
+        # RTSP：依序嘗試 GStreamer HW → GStreamer SW → FFmpeg
         if _is_rtsp_source(src):
-            gst_pipe = _build_gst_rtsp_pipeline(str(src))
-            cap = cv2.VideoCapture(gst_pipe, cv2.CAP_GSTREAMER)
-            if cap.isOpened():
-                self.cap = cap
-                self.active_source = src
-                log("INFO", f"已開啟 {label}（GStreamer 硬體解碼）: {src}")
-                return True
-            cap.release()
+            for hw_accel, decode_label in ((True, "HW nvv4l2"), (False, "SW avdec_h265")):
+                gst_pipe = _build_gst_rtsp_pipeline(str(src), hw_accel=hw_accel)
+                cap = cv2.VideoCapture(gst_pipe, cv2.CAP_GSTREAMER)
+                if cap.isOpened():
+                    self.cap = cap
+                    self.active_source = src
+                    log("INFO", f"已開啟 {label}（GStreamer {decode_label}）: {src}")
+                    return True
+                cap.release()
             log("WARN", f"{label}: GStreamer 不可用，改用 FFmpeg: {src}")
 
         # 一般來源 或 GStreamer 失敗時 fallback（FFmpeg）
