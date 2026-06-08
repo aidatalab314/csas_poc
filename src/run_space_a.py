@@ -71,12 +71,12 @@ def _get(cam_cfg: dict, space_a_cfg: dict, key: str, default):
 
 
 def _make_panel(frame: np.ndarray, label: str) -> np.ndarray:
-    """將 frame 縮放至 PANEL_H，並在頂端貼上攝影機 label。"""
+    """將 frame 縮放至 PANEL_H，並在底部貼上攝影機 label（頂端保留給 alert/warning）。"""
     h, w = frame.shape[:2]
     scale = PANEL_H / h
     panel = cv2.resize(frame, (int(w * scale), PANEL_H))
-    cv2.rectangle(panel, (0, 0), (panel.shape[1], 34), (0, 0, 0), -1)
-    cv2.putText(panel, label, (8, 24),
+    cv2.rectangle(panel, (0, PANEL_H - 34), (panel.shape[1], PANEL_H), (0, 0, 0), -1)
+    cv2.putText(panel, label, (8, PANEL_H - 10),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 255, 255), 2)
     return panel
 
