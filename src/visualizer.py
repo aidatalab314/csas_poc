@@ -32,3 +32,19 @@ def draw_alert_bar(frame: np.ndarray, text: str,
     cv2.rectangle(frame, (0, 0), (w, 48), color, -1)
     cv2.putText(frame, text, (10, 33),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 255, 255), 2)
+
+
+def draw_warning_corner(frame: np.ndarray, text: str = "!! WARNING !!"):
+    """右上角加粗警告文字（滯留物等高優先度事件專用）。"""
+    h, w = frame.shape[:2]
+    font      = cv2.FONT_HERSHEY_DUPLEX
+    scale     = 1.0
+    thickness = 3
+    pad       = 12
+    (tw, th), _ = cv2.getTextSize(text, font, scale, thickness)
+    x = w - tw - pad
+    y = th + pad
+    # 黑色陰影（增加可讀性）
+    cv2.putText(frame, text, (x + 2, y + 2), font, scale, (0, 0, 0), thickness + 2)
+    # 主文字（鮮紅）
+    cv2.putText(frame, text, (x, y), font, scale, (0, 0, 255), thickness)

@@ -44,7 +44,7 @@ from src.preprocessor import Preprocessor
 from src.tracker import CentroidTracker
 from src.roi_engine import ROIEngine, ensure_roi
 from src.event_manager import EventManager
-from src.visualizer import draw_detections, draw_tracked, draw_alert_bar
+from src.visualizer import draw_detections, draw_tracked, draw_alert_bar, draw_warning_corner
 from src.utils import load_yaml, log
 
 CLASS_PERSON  = [0]
@@ -260,6 +260,8 @@ def _camera_worker(cam_cfg: dict, det_cfg: dict, out_cfg: dict,
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
         if active_alerts:
             draw_alert_bar(frame, active_alerts[0])
+        if any("ABANDONED" in a for a in active_alerts):
+            draw_warning_corner(frame)
         if frame_q is not None:
             try:
                 frame_q.put_nowait(frame.copy())
