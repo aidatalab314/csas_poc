@@ -70,12 +70,16 @@ def _get(cam_cfg: dict, space_a_cfg: dict, key: str, default):
     return cam_cfg.get(key, space_a_cfg.get(key, default))
 
 
-def _make_panel(frame: np.ndarray, label: str) -> np.ndarray:
-    """將 frame 縮放至 PANEL_H，並在底部貼上攝影機 label（頂端保留給 alert/warning）。"""
+def _make_panel(frame: np.ndarray, label: str, status: str = "") -> np.ndarray:
+    """將 frame 縮放至 PANEL_H，底部黑色欄顯示 status（上行）與 camera label（下行）。"""
     h, w = frame.shape[:2]
     scale = PANEL_H / h
     panel = cv2.resize(frame, (int(w * scale), PANEL_H))
-    cv2.rectangle(panel, (0, PANEL_H - 34), (panel.shape[1], PANEL_H), (0, 0, 0), -1)
+    bar_h = 58 if status else 34
+    cv2.rectangle(panel, (0, PANEL_H - bar_h), (panel.shape[1], PANEL_H), (0, 0, 0), -1)
+    if status:
+        cv2.putText(panel, status, (8, PANEL_H - bar_h + 20),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, (200, 200, 200), 1)
     cv2.putText(panel, label, (8, PANEL_H - 10),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 255, 255), 2)
     return panel
@@ -258,15 +262,13 @@ def _camera_worker(cam_cfg: dict, det_cfg: dict, out_cfg: dict,
         draw_detections(frame, person_in_roi, color=(0, 255, 0))
         draw_detections(frame, object_in_roi, color=(0, 165, 255))
         draw_tracked(frame, tracked_persons)
-        cv2.putText(frame, status, (10, frame.shape[0] - 15),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
         if active_alerts:
             draw_alert_bar(frame, active_alerts[0])
         if has_abandoned:
             draw_warning_corner(frame)
         if frame_q is not None:
             try:
-                frame_q.put_nowait(frame.copy())
+                frame_q.put_nowait((frame.copy(), status))
             except queue.Full:
                 pass
 
@@ -344,32 +346,32 @@ def run(camera_ids: list[str] | None = None, source_override=None, mode: str = "
     # ── 開發者模式：split-screen 顯示 ────────────────────────────────────────
     log("INFO", f"[Space A] 開發者模式執行中：{valid_ids}  |  按 Q / ESC 結束")
     WIN_TITLE = "CSAS PoC — Space A"
-    latest: dict[str, np.ndarray | None] = {cid: None for cid in valid_ids}
+    latest: dict[str, tuple[np.ndarray, str] | None] = {cid: None for cid in valid_ids}
     finished: set[str] = set()
 
     while len(finished) < len(valid_ids):
         for cid in valid_ids:
             if cid in finished:
                 continue
-            last_frame = None
-            got_done   = False
+            last_item = None
+            got_done  = False
             while True:
                 try:
                     item = frame_qs[cid].get_nowait()
                     if item is _DONE:
                         got_done = True
                         break
-                    last_frame = item
+                    last_item = item
                 except queue.Empty:
                     break
 
-            if last_frame is not None:
-                latest[cid] = last_frame
+            if last_item is not None:
+                latest[cid] = last_item
             if got_done:
                 finished.add(cid)
 
         panels = [
-            _make_panel(latest[cid], cid)
+            _make_panel(latest[cid][0], cid, latest[cid][1])
             for cid in valid_ids
             if latest[cid] is not None
         ]
