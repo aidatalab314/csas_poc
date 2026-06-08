@@ -48,7 +48,7 @@ from src.visualizer import draw_detections, draw_tracked, draw_alert_bar
 from src.utils import load_yaml, log
 
 CLASS_PERSON  = [0]
-CLASS_OBJECTS = [24, 26, 28]   # backpack, handbag, suitcase
+CLASS_OBJECTS = [24, 25, 26, 28]   # backpack, umbrella, handbag, suitcase
 
 ROI_RECORDS = "configs/roi_records.json"
 CONFIG_PATH = "configs/cameras.yaml"
