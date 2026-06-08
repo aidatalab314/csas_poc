@@ -1,39 +1,27 @@
 cameras:
-  # ── Space A：車站大廳 / 開放式通道 ──────────────────────────────────────────
+  # ── Space A 攝影機群 ──────────────────────────────────────────────────────────
   - id: camera_a
     name: "大廳 / 開放式通道"
+    space: space_a
     source: "rtsp://root:root@192.168.6.90/cam1/h264"
     fallback: "data/demo_videos/camera_a.mp4"
-    display_scale: 0.7
-    # 人流密度
-    crowd_alert_count: 5          # 區域內人數超過此值觸發
-    # 滯留物偵測
-    abandoned_alert_seconds: 15.0 # 物件在區域內無人陪伴超過此秒觸發
-    abandoned_proximity_px: 120   # 物件與最近人的距離超過此值 → 視為無陪伴
-    # 異常移動
-    speed_alert_px_per_frame: 20  # 人員質心位移 px/frame 超過此值視為快速移動
-    speed_alert_person_count: 2   # 同時有幾人快速移動才觸發
+    # 無個別覆蓋 → 沿用下方 space_a 預設值
 
-  # ── Space B：樓梯 / 狹窄通道 ────────────────────────────────────────────────
+  # ── Space B 攝影機群 ──────────────────────────────────────────────────────────
   - id: camera_b
     name: "樓梯 / 狹窄通道"
+    space: space_b
     source: "rtsp://root:root@192.168.6.91/cam1/h264"
     fallback: "data/demo_videos/camera_b.mp4"
-    display_scale: 0.7
-    # 群眾恐慌性移動
-    rush_speed_px_per_frame: 25   # 人員移動速度門檻
-    rush_person_count: 3          # 同時幾人快速移動才觸發 crowd_rush
-    # 擁擠
-    congestion_alert_count: 8     # 區域內人數超過此值觸發擁擠警報
+    # 無個別覆蓋 → 沿用下方 space_b 預設值
 
-  # ── Space C：月台模擬區域 ────────────────────────────────────────────────────
+  # ── Space C 攝影機群 ──────────────────────────────────────────────────────────
   - id: camera_c
     name: "月台模擬區域"
-    source: "rtsp://root:root@192.168.6.90/cam1/h264"  # 可替換為月台 camera
+    space: space_c
+    source: "rtsp://root:root@192.168.6.92/cam1/h264"  # TODO: 替換為月台實際 RTSP URL
     fallback: "data/demo_videos/camera_c.mp4"
-    display_scale: 0.7
-    # 大型物件：使用 COCO class 28（suitcase）判定
-    large_object_classes: [28]    # suitcase；可擴充 [24, 26, 28]
+    # 無個別覆蓋 → 沿用下方 space_c 預設值
 
 # ── Space A 場域共用預設值（各攝影機可個別覆蓋）──────────────────────────────────
 space_a:
@@ -43,6 +31,16 @@ space_a:
   speed_alert_px_per_frame: 20  # 人員質心位移 px/frame 超過此值視為快速移動
   speed_alert_person_count: 2   # 同時幾人快速移動才觸發
 
+# ── Space B 場域共用預設值（各攝影機可個別覆蓋）──────────────────────────────────
+space_b:
+  rush_speed_px_per_frame: 25   # 人員移動速度門檻（px/frame）
+  rush_person_count: 3          # 同時幾人快速移動才觸發 crowd_rush
+  congestion_alert_count: 8     # 區域內人數超過此值觸發擁擠警報
+
+# ── Space C 場域共用預設值（各攝影機可個別覆蓋）──────────────────────────────────
+space_c:
+  large_object_classes: [28]    # suitcase（COCO class 28）；可擴充 [24, 26, 28]
+
 # ── 共用偵測器設定 ─────────────────────────────────────────────────────────────
 detector:
   model: "models/person_detection/yolo11n.pt"
@@ -51,15 +49,19 @@ detector:
   imgsz: 640      # 推論解析度：640（平衡）/ 480（更快）/ 1280（遠距細節）
 
   # ── 效能優化 ────────────────────────────────────────────────────────────────
-  inference_skip_frames: 3  # 每 N 幀執行一次推論（1 = 不跳幀，2 = 隔幀推論）
+  inference_skip_frames: 3  # 每 N 幀執行一次推論（1 = 不跳幀）
                             # Mac CPU 雙路建議 2~3，MPS 可設為 1
 
   # ── 影像前處理（推論前套用）─────────────────────────────────────────────────
   preprocess:
     gamma: 0.5        # Gamma 校正：1.0 = 關閉；< 1 提亮（暗場建議 0.5~0.8）
-    clahe: true      # CLAHE 自適應對比增強：暗區 / 逆光場景建議開啟
+    clahe: true       # CLAHE 自適應對比增強：暗區 / 逆光場景建議開啟
     clahe_clip: 3.0   # CLAHE clipLimit（2.0~4.0，越高對比越強）
     clahe_grid: [8, 8]  # CLAHE tileGridSize
+
+# ── 顯示設定 ───────────────────────────────────────────────────────────────────
+display:
+  scale: 0.7   # Space B/C 縮放係數；Space A 使用 PANEL_H split-screen
 
 # ── 輸出設定 ───────────────────────────────────────────────────────────────────
 output:

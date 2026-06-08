@@ -11,6 +11,8 @@ ROI 設定重點：
   - 用 scripts/setup_roi.py 繪製 line（警戒線）與 zone（限制區域）
 
 使用 Camera C（月台模擬區域）。
+偵測參數讀取順序：camera_c 個別設定 → space_c 全域預設 → hardcode 預設。
+推論：單次 YOLO 同時偵測 person + 大型物件，按 class_id 拆分（避免兩次推論）。
 
 用法：
     python src/run_space_c.py
@@ -21,6 +23,7 @@ ROI 設定重點：
 
 import argparse
 import sys
+import time
 import cv2
 import numpy as np
 from pathlib import Path
@@ -36,12 +39,17 @@ from src.event_manager import EventManager
 from src.visualizer import draw_detections, draw_tracked, draw_alert_bar
 from src.utils import load_yaml, log
 
-CLASS_PERSON = [0]
+CLASS_PERSON       = [0]
 CLASS_LARGE_OBJECT = [28]   # suitcase（COCO）；可擴充至 [24, 26, 28]
 
-CAMERA_ID = "camera_c"
+CAMERA_ID   = "camera_c"
 ROI_RECORDS = "configs/roi_records.json"
 CONFIG_PATH = "configs/cameras.yaml"
+
+
+def _get(cam_cfg: dict, space_c_cfg: dict, key: str, default):
+    """攝影機設定 → 全域 space_c 預設 → hardcode 預設。"""
+    return cam_cfg.get(key, space_c_cfg.get(key, default))
 
 
 def _draw_intrusion_highlight(frame: np.ndarray, det: dict,
@@ -54,27 +62,27 @@ def _draw_intrusion_highlight(frame: np.ndarray, det: dict,
 
 
 def run(source=None, mode: str = "dev"):
-    import time
     cfg = load_yaml(CONFIG_PATH)
 
     cam_cfg_list = [c for c in cfg["cameras"] if c["id"] == CAMERA_ID]
     if not cam_cfg_list:
         log("WARN", f"cameras.yaml 中找不到 {CAMERA_ID}，使用預設值")
-        cam_cfg = {"id": CAMERA_ID, "display_scale": 0.7}
+        cam_cfg = {"id": CAMERA_ID}
     else:
         cam_cfg = cam_cfg_list[0]
 
-    det_cfg = cfg["detector"]
-    out_cfg = cfg["output"]
+    det_cfg     = cfg["detector"]
+    out_cfg     = cfg["output"]
+    space_c_cfg = cfg.get("space_c", {})
 
-    src = source if source is not None else cam_cfg.get("source")
-    fallback = None if source is not None else cam_cfg.get("fallback")
-    display_scale = cam_cfg.get("display_scale", 0.7)
-    large_classes = cam_cfg.get("large_object_classes", CLASS_LARGE_OBJECT)
+    src           = source if source is not None else cam_cfg.get("source")
+    fallback      = None if source is not None else cam_cfg.get("fallback")
+    display_scale = cfg.get("display", {}).get("scale", 0.7)
+    large_classes = _get(cam_cfg, space_c_cfg, "large_object_classes", CLASS_LARGE_OBJECT)
+    skip_n        = max(1, det_cfg.get("inference_skip_frames", 1))
 
     log("INFO", f"[Space C] 啟動 [mode={mode}]  source={src}")
 
-    # 啟動前自動 ROI 檢查（Space C 需要 zone + line）
     ensure_roi(CAMERA_ID,
                source=src,
                fallback=fallback,
@@ -88,32 +96,24 @@ def run(source=None, mode: str = "dev"):
 
     pre = Preprocessor.from_config(det_cfg.get("preprocess", {}))
     if not pre.is_noop:
-        log("INFO", f"[Space C] 前處理已啟用: {det_cfg.get('preprocess')}")
+        log("INFO", f"[Space C] 前處理已啟用")
 
-    # 人員偵測器
-    person_detector = Detector(
+    # 單次推論同時偵測 person + 大型物件，再按 class_id 拆分
+    detector = Detector(
         det_cfg["model"], conf=det_cfg.get("conf", 0.4),
         device=det_cfg.get("device", "cpu"),
-        target_classes=CLASS_PERSON,
-        imgsz=det_cfg.get("imgsz", 640),
-        preprocessor=pre,
-    )
-    # 大型物件偵測器（行李箱等）— 共用同一個前處理實例
-    object_detector = Detector(
-        det_cfg["model"], conf=det_cfg.get("conf", 0.35),
-        device=det_cfg.get("device", "cpu"),
-        target_classes=large_classes,
+        target_classes=CLASS_PERSON + large_classes,
         imgsz=det_cfg.get("imgsz", 640),
         preprocessor=pre,
     )
 
     person_tracker = CentroidTracker(max_disappeared=30)
     object_tracker = CentroidTracker(max_disappeared=40)
-    roi = ROIEngine(CAMERA_ID, ROI_RECORDS)
+    roi    = ROIEngine(CAMERA_ID, ROI_RECORDS)
     events = EventManager(
         CAMERA_ID,
         snapshot_dir=out_cfg.get("snapshot_dir", "data/snapshots"),
-        log_dir=out_cfg.get("log_dir", "data/logs"),
+        log_dir=out_cfg.get("log_dir",            "data/logs"),
         save_snapshots=out_cfg.get("save_snapshots", True),
     )
 
@@ -124,34 +124,41 @@ def run(source=None, mode: str = "dev"):
 
     log("INFO", f"[Space C] zones={len(roi.zones)}, lines={len(roi.lines)}")
 
-    fps_t0 = time.monotonic()
+    frame_count        = 0
+    cached_person_dets: list[dict] = []
+    cached_object_dets: list[dict] = []
+    tracked_persons: dict = {}
+    tracked_objects: dict = {}
+    fps_t0     = time.monotonic()
     fps_frames = 0
-    fps_val = 0.0
+    fps_val    = 0.0
 
     while reader.is_opened():
         ret, frame = reader.read()
         if not ret:
             break
 
-        fps_frames += 1
+        frame_count += 1
+        fps_frames  += 1
         if fps_frames == 30:
-            fps_val = 30 / (time.monotonic() - fps_t0)
-            fps_t0 = time.monotonic()
+            fps_val    = 30 / (time.monotonic() - fps_t0)
+            fps_t0     = time.monotonic()
             fps_frames = 0
 
-        # ── 偵測與追蹤 ────────────────────────────────────────────────────────
-        person_dets = person_detector.detect(frame)
-        object_dets = object_detector.detect(frame)
-
-        tracked_persons = person_tracker.update(person_dets)
-        tracked_objects = object_tracker.update(object_dets)
+        # ── 推論（單次 YOLO，跳幀，按 class_id 拆分）──────────────────────────
+        if frame_count % skip_n == 0:
+            all_dets           = detector.detect(frame)
+            cached_person_dets = [d for d in all_dets if d["class_id"] == 0]
+            cached_object_dets = [d for d in all_dets if d["class_id"] in large_classes]
+            tracked_persons    = person_tracker.update(cached_person_dets)
+            tracked_objects    = object_tracker.update(cached_object_dets)
 
         active_alerts: list[str] = []
 
         # ── 規則 1：人員跨越警戒線 ────────────────────────────────────────────
         for obj_id, obj in tracked_persons.items():
             cx, cy = obj["cx"], obj["cy"]
-            conf = obj["det"].get("conf", 0.5)
+            conf   = obj["det"].get("conf", 0.5)
             for line_label in roi.check_line_crossing(obj_id, cx, cy):
                 if events.trigger("line_crossing", line_label, "high", conf, frame):
                     active_alerts.append(f"LINE CROSS: person ID:{obj_id} → {line_label}")
@@ -162,7 +169,7 @@ def run(source=None, mode: str = "dev"):
         # ── 規則 2：人員進入限制區域 ──────────────────────────────────────────
         for obj_id, obj in tracked_persons.items():
             cx, cy = obj["cx"], obj["cy"]
-            conf = obj["det"].get("conf", 0.5)
+            conf   = obj["det"].get("conf", 0.5)
             for zone_label in roi.get_zone_labels(cx, cy):
                 if events.trigger("zone_intrusion", zone_label, "high", conf, frame):
                     active_alerts.append(f"INTRUSION: person ID:{obj_id} in {zone_label}")
@@ -173,8 +180,8 @@ def run(source=None, mode: str = "dev"):
         # ── 規則 3：大型物件跨線 / 進入限制區域 ──────────────────────────────
         for obj_id, obj in tracked_objects.items():
             cx, cy = obj["cx"], obj["cy"]
-            conf = obj["det"].get("conf", 0.5)
-            label = obj["det"].get("label", "object")
+            conf   = obj["det"].get("conf", 0.5)
+            label  = obj["det"].get("label", "object")
             for line_label in roi.check_line_crossing(f"obj_{obj_id}", cx, cy):  # type: ignore[arg-type]
                 if events.trigger("large_object_line_crossing", line_label, "high", conf, frame):
                     active_alerts.append(f"OBJ CROSS: {label} ID:{obj_id} → {line_label}")
@@ -187,7 +194,8 @@ def run(source=None, mode: str = "dev"):
                         _draw_intrusion_highlight(frame, obj["det"],
                                                   f"OBJ IN {zone_label}", (0, 80, 255))
 
-        status = f"Persons:{len(tracked_persons)}  Objects:{len(tracked_objects)}  FPS:{fps_val:.1f}"
+        skip_label = f"  skip:{skip_n}" if skip_n > 1 else ""
+        status = f"Persons:{len(tracked_persons)}  Objects:{len(tracked_objects)}  FPS:{fps_val:.1f}{skip_label}"
 
         # ── 作業模式：定期 log 狀態，警報即時輸出 ────────────────────────────
         if mode == "op":
@@ -199,8 +207,8 @@ def run(source=None, mode: str = "dev"):
 
         # ── 開發者模式：繪圖 + 顯示 ──────────────────────────────────────────
         roi.draw(frame)
-        draw_detections(frame, person_dets, color=(0, 220, 0))
-        draw_detections(frame, object_dets, color=(0, 165, 255))
+        draw_detections(frame, cached_person_dets, color=(0, 220, 0))
+        draw_detections(frame, cached_object_dets, color=(0, 165, 255))
         draw_tracked(frame, tracked_persons)
         if active_alerts:
             draw_alert_bar(frame, active_alerts[0], color=(0, 0, 180))

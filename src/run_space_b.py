@@ -7,6 +7,7 @@ Space B — 樓梯 / 狹窄通道
   3. 聲音事件偵測     → [MVP 佔位] YOHO 音訊模型預留位置
 
 使用 Camera B（樓梯 / 狹窄通道）。
+偵測參數讀取順序：camera_b 個別設定 → space_b 全域預設 → hardcode 預設。
 
 用法：
     python src/run_space_b.py
@@ -18,6 +19,7 @@ Space B — 樓梯 / 狹窄通道
 import argparse
 import sys
 import math
+import time
 import cv2
 import numpy as np
 from pathlib import Path
@@ -35,9 +37,14 @@ from src.utils import load_yaml, log
 
 CLASS_PERSON = [0]
 
-CAMERA_ID = "camera_b"
+CAMERA_ID   = "camera_b"
 ROI_RECORDS = "configs/roi_records.json"
 CONFIG_PATH = "configs/cameras.yaml"
+
+
+def _get(cam_cfg: dict, space_b_cfg: dict, key: str, default):
+    """攝影機設定 → 全域 space_b 預設 → hardcode 預設。"""
+    return cam_cfg.get(key, space_b_cfg.get(key, default))
 
 
 def _draw_speed_overlay(frame: np.ndarray,
@@ -58,25 +65,24 @@ def _draw_speed_overlay(frame: np.ndarray,
 def _audio_placeholder():
     """YOHO 音訊偵測佔位：MVP 版本僅輸出提示。"""
     # TODO: 整合 YOHO 音訊事件偵測模型
-    # yoho = YOHODetector(model_path="models/audio/yoho.pt")
-    # events = yoho.detect(audio_stream)
     pass
 
 
 def run(source=None, mode: str = "dev"):
-    import time
-    cfg = load_yaml(CONFIG_PATH)
-    cam_cfg = next(c for c in cfg["cameras"] if c["id"] == CAMERA_ID)
-    det_cfg = cfg["detector"]
-    out_cfg = cfg["output"]
+    cfg         = load_yaml(CONFIG_PATH)
+    cam_cfg     = next(c for c in cfg["cameras"] if c["id"] == CAMERA_ID)
+    det_cfg     = cfg["detector"]
+    out_cfg     = cfg["output"]
+    space_b_cfg = cfg.get("space_b", {})
 
-    src = source if source is not None else cam_cfg.get("source")
-    fallback = None if source is not None else cam_cfg.get("fallback")
-    display_scale = cam_cfg.get("display_scale", 0.7)
+    src           = source if source is not None else cam_cfg.get("source")
+    fallback      = None if source is not None else cam_cfg.get("fallback")
+    display_scale = cfg.get("display", {}).get("scale", 0.7)
 
-    rush_speed = cam_cfg.get("rush_speed_px_per_frame", 25)
-    rush_count = cam_cfg.get("rush_person_count", 3)
-    congestion_count = cam_cfg.get("congestion_alert_count", 8)
+    rush_speed       = _get(cam_cfg, space_b_cfg, "rush_speed_px_per_frame", 25)
+    rush_count       = _get(cam_cfg, space_b_cfg, "rush_person_count",        3)
+    congestion_count = _get(cam_cfg, space_b_cfg, "congestion_alert_count",   8)
+    skip_n           = max(1, det_cfg.get("inference_skip_frames", 1))
 
     log("INFO", f"[Space B] 啟動 [mode={mode}]  source={src}")
     log("INFO", "[Space B] 聲音事件偵測：MVP 版本為佔位模式（YOHO 尚未整合）")
@@ -94,7 +100,7 @@ def run(source=None, mode: str = "dev"):
 
     pre = Preprocessor.from_config(det_cfg.get("preprocess", {}))
     if not pre.is_noop:
-        log("INFO", f"[Space B] 前處理已啟用: {det_cfg.get('preprocess')}")
+        log("INFO", f"[Space B] 前處理已啟用")
 
     detector = Detector(
         det_cfg["model"], conf=det_cfg.get("conf", 0.4),
@@ -105,36 +111,41 @@ def run(source=None, mode: str = "dev"):
     )
 
     tracker = CentroidTracker(max_disappeared=25)
-    roi = ROIEngine(CAMERA_ID, ROI_RECORDS)
-    events = EventManager(
+    roi     = ROIEngine(CAMERA_ID, ROI_RECORDS)
+    events  = EventManager(
         CAMERA_ID,
         snapshot_dir=out_cfg.get("snapshot_dir", "data/snapshots"),
-        log_dir=out_cfg.get("log_dir", "data/logs"),
+        log_dir=out_cfg.get("log_dir",            "data/logs"),
         save_snapshots=out_cfg.get("save_snapshots", True),
     )
 
     log("INFO", f"[Space B] zones={len(roi.zones)}, lines={len(roi.lines)}")
 
     prev_pos: dict[int, tuple[int, int]] = {}
-    fps_t0 = time.monotonic()
+    frame_count  = 0
+    cached_dets: list[dict] = []
+    tracked: dict = {}
+    fps_t0     = time.monotonic()
     fps_frames = 0
-    fps_val = 0.0
+    fps_val    = 0.0
 
     while reader.is_opened():
         ret, frame = reader.read()
         if not ret:
             break
 
-        fps_frames += 1
+        frame_count += 1
+        fps_frames  += 1
         if fps_frames == 30:
-            fps_val = 30 / (time.monotonic() - fps_t0)
-            fps_t0 = time.monotonic()
+            fps_val    = 30 / (time.monotonic() - fps_t0)
+            fps_t0     = time.monotonic()
             fps_frames = 0
 
-        # ── 偵測與追蹤 ────────────────────────────────────────────────────────
-        dets = detector.detect(frame)
-        dets_in_roi = [d for d in dets if roi.is_in_any_zone(d["cx"], d["cy"])]
-        tracked = tracker.update(dets_in_roi)
+        # ── 推論（跳幀，沿用快取結果）──────────────────────────────────────────
+        if frame_count % skip_n == 0:
+            dets        = detector.detect(frame)
+            cached_dets = [d for d in dets if roi.is_in_any_zone(d["cx"], d["cy"])]
+            tracked     = tracker.update(cached_dets)
 
         # 狀態字串
         if roi.zones:
@@ -144,7 +155,8 @@ def run(source=None, mode: str = "dev"):
             )
         else:
             zone_str = f"People:{len(tracked)}"
-        status = f"{zone_str}  FPS:{fps_val:.1f}"
+        skip_label = f"  skip:{skip_n}" if skip_n > 1 else ""
+        status = f"{zone_str}  FPS:{fps_val:.1f}{skip_label}"
 
         # ── 速度計算 ──────────────────────────────────────────────────────────
         current_speeds: dict[int, float] = {}
@@ -158,7 +170,7 @@ def run(source=None, mode: str = "dev"):
             if gone_id not in tracked:
                 del prev_pos[gone_id]
 
-        roi_labels = [z["label"] for z in roi.zones] or ["zone_b"]
+        roi_labels    = [z["label"] for z in roi.zones] or ["zone_b"]
         active_alerts: list[str] = []
 
         # ── 規則 1：群眾恐慌性移動 ────────────────────────────────────────────
@@ -185,7 +197,7 @@ def run(source=None, mode: str = "dev"):
 
         # ── 開發者模式：繪圖 + 顯示 ──────────────────────────────────────────
         roi.draw(frame)
-        draw_detections(frame, dets_in_roi)
+        draw_detections(frame, cached_dets)
         draw_tracked(frame, tracked)
         _draw_speed_overlay(frame, current_speeds, tracked, rush_speed)
         cv2.putText(frame, status, (10, frame.shape[0] - 15),
