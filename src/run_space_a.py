@@ -166,7 +166,7 @@ def _camera_worker(cam_cfg: dict, det_cfg: dict, out_cfg: dict,
         if frame_count % skip_n == 0:
             all_dets       = detector.detect(frame)
             cached_persons = [d for d in all_dets if d["class_id"] == 0]
-            cached_objects = [d for d in all_dets if d["class_id"] in (24, 26, 28)]
+            cached_objects = [d for d in all_dets if d["class_id"] in CLASS_OBJECTS]
             tracked_persons = person_tracker.update(
                 [d for d in cached_persons if roi.is_in_any_zone(d["cx"], d["cy"])])
             tracked_objects = object_tracker.update(
