@@ -201,6 +201,7 @@ def _camera_worker(cam_cfg: dict, det_cfg: dict, out_cfg: dict,
                 active_alerts.append(f"CROWD {zone_label}: {count} persons")
 
         # 規則 2：滯留物
+        has_abandoned = False
         for obj_id, obj in tracked_objects.items():
             cx, cy = obj["cx"], obj["cy"]
             dwell  = obj["dwell_seconds"]
@@ -214,6 +215,7 @@ def _camera_worker(cam_cfg: dict, det_cfg: dict, out_cfg: dict,
                             (x1, y1 - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
             if dwell >= abandoned_secs:
                 if _nearest_person_dist(cx, cy, person_in_roi) > proximity_px:
+                    has_abandoned = True
                     zone_labels = roi.get_zone_labels(cx, cy) or ["zone_a"]
                     if events.trigger("abandoned_object", zone_labels[0],
                                       "high", conf, frame):
@@ -260,7 +262,7 @@ def _camera_worker(cam_cfg: dict, det_cfg: dict, out_cfg: dict,
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
         if active_alerts:
             draw_alert_bar(frame, active_alerts[0])
-        if any("ABANDONED" in a for a in active_alerts):
+        if has_abandoned:
             draw_warning_corner(frame)
         if frame_q is not None:
             try:
