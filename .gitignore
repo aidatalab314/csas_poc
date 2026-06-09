@@ -24,3 +24,6 @@ models/abandoned_object/*.pt
 models/fire_smoke/*.pt
 
 .DS_Store
+
+# 本機覆蓋設定（各機器自行建立，不進版控）
+configs/*.local.yaml

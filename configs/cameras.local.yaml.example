@@ -1,0 +1,29 @@
+# ── 本機覆蓋設定範本 ─────────────────────────────────────────────────────────
+# 複製此檔為 cameras.local.yaml，填入本機專屬設定。
+# 此檔不進版控（.gitignore），git pull 不會覆蓋。
+# 只需填要覆蓋的項目，其餘沿用 cameras.yaml 預設值。
+#
+#   cp configs/cameras.local.yaml.example configs/cameras.local.yaml
+#
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── Jetson Orin（JetPack 6.x + TensorRT）────────────────────────────────────
+# detector:
+#   device: "0"                  # CUDA GPU（nvidia-smi 確認有顯示）
+#   inference_skip_frames: 1     # TensorRT 夠快，不需跳幀
+#   model: "models/person_detection/yolo11n.engine"  # TensorRT engine
+
+# ── Ubuntu x86 CPU（實驗室伺服器）────────────────────────────────────────────
+# detector:
+#   device: "cpu"
+#   inference_skip_frames: 3
+
+# ── Ubuntu x86 CUDA GPU ──────────────────────────────────────────────────────
+# detector:
+#   device: "0"
+#   inference_skip_frames: 2
+
+# ── Mac M1/M2/M3（預設，通常不需 local 覆蓋）────────────────────────────────
+# detector:
+#   device: "mps"
+#   inference_skip_frames: 3
