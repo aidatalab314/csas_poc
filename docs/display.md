@@ -65,29 +65,27 @@ python scripts/setup_roi.py --camera camera_a --source "rtsp://..." --type zone 
 
 ```
 ┌─────────────────────────┬─────────────────────────┐
-│  camera_a               │  camera_b               │  ← 黑底青字，panel 標題
-├─────────────────────────┴─────────────────────────┤
-│                                                   │
-│  ╔══════════════════╗                             │
-│  ║  (半透明填色)     ║  Zone 0  ← ROI 偵測區      │
-│  ╚══════════════════╝                             │
-│                                                   │
-│  ┌──────────┐                                     │
-│  │ person   │  ← 綠色框                           │
-│  │  0.87    │  ← 類別 + 信心分數                  │
-│  └────●─────┘  ← 綠色圓點（bbox 中心）             │
-│    ID:0 2.3s   ← 追蹤 ID + 已追蹤秒數             │
-│                                                   │
-│  ┌──────────┐                                     │
+│  CROWD Zone 0: 5 persons│                         │  ← 頂端紅色警報列（單行，三擇一）
+│                         │             !! WARNING !!│  ← 右上角紅字（滯留物告警專用）
+│  ╔══════════════════╗   │                         │
+│  ║  (半透明填色)     ║   │  Zone 0  ← ROI 偵測區   │
+│  ╚══════════════════╝   │                         │
+│                         │                         │
+│  ┌──────────┐           │                         │
+│  │ person   │  ← 綠色框  │                         │
+│  │  0.87    │           │                         │
+│  └────●─────┘           │                         │
+│    ID:0 2.3s            │                         │
+│                         │                         │
+│  ┌──────────┐           │                         │
 │  │ suitcase │  ← 橘色框（偵測中）                  │
-│  │  12s     │  ← 類別 + 已滯留秒數                │
-│  └──────────┘  ※ 超過滯留門檻且無人陪伴 → 深紅色框  │
-│                                                   │
-│    ──→          ← 紅色箭頭（快速移動者位移向量）    │
-│                                                   │
-├───────────────────────────────────────────────────┤
-│  Zone 0:2  Zone 1:1  FPS:18.3  skip:2            │  ← 白字狀態列
-└───────────────────────────────────────────────────┘
+│  │  18s     │  ※ 超過滯留門檻且無人陪伴 → 深紅色框  │
+│  └──────────┘           │                         │
+│    ──→  ← 紅色箭頭（快速移動者）                   │
+├─────────────────────────┼─────────────────────────┤
+│  Zone 0:2  FPS:18.3 ..  │  Zone 0:1  FPS:18.5 ..  │  ← 灰字狀態（各 panel 獨立）
+│  camera_a               │  camera_b               │  ← 青字 camera label
+└─────────────────────────┴─────────────────────────┘
 
 觸發事件 → 頂端紅色警報列（三擇一）：
   CROWD Zone 0: 5 persons        ← 該 zone 人數超過門檻
@@ -97,16 +95,17 @@ python scripts/setup_roi.py --camera camera_a --source "rtsp://..." --type zone 
 
 | 元素 | 說明 |
 |------|------|
-| `camera_a` / `camera_b` | split-screen 各 panel 的攝影機 ID |
+| `camera_a` / `camera_b` | split-screen 各 panel 底部的攝影機 ID（青字） |
 | 半透明多邊形 `Zone N` | 已設定的 ROI 偵測區，顏色輪替 |
 | 綠色框 `person 0.87` | YOLO 偵測到的人員（信心分數 0~1） |
 | 橘黃色圓點 `ID:N X.Xs` | 追蹤 ID + 已被追蹤的累計秒數 |
 | 橘色框 `suitcase 12s` | 背包 / 行李箱偵測中，未超過滯留門檻 |
 | 深紅色框 `suitcase 18s` | 超過 `abandoned_alert_seconds` 且附近無人 |
 | 紅色箭頭 | 速度超過 `speed_alert_px_per_frame` 的人員位移向量 |
-| `Zone 0:2  Zone 1:1` | 各 ROI 偵測區的即時人數（無 ROI 時顯示 `People:N`） |
+| `!! WARNING !!` | 右上角紅字，有任一滯留物告警時持續顯示 |
+| `Zone 0:2  Zone 1:1` | 各 ROI 偵測區即時人數，顯示於各 panel 底部灰字欄 |
 | `FPS:18.3` | 該攝影機執行緒的實際畫面率 |
-| `skip:2` | 隔幀推論模式；為 1 時不顯示 |
+| `skip:3` | 隔幀推論模式；`inference_skip_frames: 1` 時不顯示 |
 
 ---
 
@@ -131,7 +130,7 @@ python scripts/setup_roi.py --camera camera_a --source "rtsp://..." --type zone 
 │    spd:32px   ← 紅色，只有超過門檻者才顯示         │
 │                                                   │
 ├───────────────────────────────────────────────────┤
-│  Zone 0:4                     FPS:25.3            │
+│  Zone 0:4  FPS:25.3  skip:3                       │
 └───────────────────────────────────────────────────┘
 
 觸發事件 → 頂端深紅色警報列：
@@ -144,6 +143,8 @@ python scripts/setup_roi.py --camera camera_a --source "rtsp://..." --type zone 
 | 紅色雙圓 `◎` | 速度超過 `rush_speed_px_per_frame` 的人員 |
 | `spd:32px` | 超速者本幀移動的像素距離（僅超速者顯示） |
 | `Zone 0:N` | ROI 通道區內的即時人數（無 ROI 時顯示 `People:N`） |
+| `FPS:N` | 實際畫面率 |
+| `skip:3` | 隔幀推論模式；`inference_skip_frames: 1` 時不顯示 |
 | `CROWD RUSH` | 同時有 N 人超速（N ≥ `rush_person_count`），事件綁定實際 zone 名稱 |
 | `CONGESTION` | 通道人數超過 `congestion_alert_count` |
 
@@ -176,7 +177,7 @@ python scripts/setup_roi.py --camera camera_a --source "rtsp://..." --type zone 
 │  ╚══════════╝                                     │
 │                                                   │
 ├───────────────────────────────────────────────────┤
-│  Persons:2  Objects:1         FPS:28.4            │
+│  Persons:2  Objects:1  FPS:28.4  skip:3           │
 └───────────────────────────────────────────────────┘
 
 觸發事件 → 頂端深藍色警報列（四種）：
@@ -196,6 +197,8 @@ python scripts/setup_roi.py --camera camera_a --source "rtsp://..." --type zone 
 | 深藍框 `INTRUSION` | 人員進入限制區域 |
 | 藍橘框 `OBJ CROSS` / `OBJ IN` | 大型物件跨線 / 入侵限制區 |
 | `Persons:N  Objects:N` | 全幀偵測到的人員數 + 大型物件數 |
+| `FPS:N` | 實際畫面率 |
+| `skip:3` | 隔幀推論模式；`inference_skip_frames: 1` 時不顯示 |
 
 ---
 
