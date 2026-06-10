@@ -80,14 +80,23 @@ python scripts/setup_roi.py --list   # 查看所有設定
 | `--mode dev`（預設）| 顯示即時畫面、偵測框、警報列 | 開發、展示、ROI 調校 |
 | `--mode op` | 無畫面，定期 log 狀態 + 即時輸出警報 | Jetson 正式部署 |
 
+#### 執行模式說明：正常模式 vs 測試影片模式
+
+| 情況 | ROI 行為 | 錄影輸出 |
+|------|---------|---------|
+| **無 `--source`**（正常模式）| 讀取 `roi_records.json` 已存設定，首次才引導繪製 | 無 |
+| **有 `--source`**（測試影片模式）| 每次強制重新互動繪製，**不寫入** `roi_records.json` | 自動儲存至 `data/test_recordings/` |
+
 #### Space A — 車站大廳（支援多攝影機）
 
 ```bash
-# 單台攝影機
+# 正常模式（RTSP，讀已存 ROI）
 python src/run_space_a.py --cameras camera_a
-python src/run_space_a.py --cameras camera_a --source data/demo_videos/hall.mp4
 
-# 雙攝影機 split-screen
+# 測試影片模式（每次重畫 ROI，自動錄影）
+python src/run_space_a.py --cameras camera_a --source data/demo_videos/panic_video.mp4
+
+# 雙攝影機 split-screen（正常模式）
 python src/run_space_a.py --cameras camera_a,camera_b
 
 # 作業模式（無畫面）
@@ -107,16 +116,24 @@ python src/run_space_a.py --cameras camera_a,camera_b --mode op
 #### Space B — 樓梯 / 狹窄通道
 
 ```bash
+# 正常模式
 python src/run_space_b.py
+
+# 測試影片模式
 python src/run_space_b.py --source data/demo_videos/camera_b.mp4
+
 python src/run_space_b.py --mode op
 ```
 
 #### Space C — 月台模擬
 
 ```bash
+# 正常模式
 python src/run_space_c.py
+
+# 測試影片模式
 python src/run_space_c.py --source data/demo_videos/camera_c.mp4
+
 python src/run_space_c.py --mode op
 ```
 
@@ -132,6 +149,7 @@ csas_poc/
 │   └── event_rules.yaml      # 事件規則說明（參考用）
 ├── data/
 │   ├── demo_videos/          # 本地測試影片
+│   ├── test_recordings/      # 測試影片模式的偵測結果錄影（自動產生）
 │   ├── snapshots/            # 事件觸發截圖
 │   └── logs/                 # 事件 JSON log
 ├── docs/
@@ -191,6 +209,7 @@ csas_poc/
 - [x] Jetson Orin TensorRT FP16 加速（yolo11n.engine）
 - [x] Jetson GStreamer nvv4l2decoder H.265 硬體解碼
 - [x] dev / op 雙模式：開發者顯示畫面 / 作業模式無畫面純 log
+- [x] 測試影片模式：`--source` 自動觸發，ROI 每次重畫不存檔，偵測結果自動錄影至 `data/test_recordings/`
 
 ## 第二階段（暫不優先）
 

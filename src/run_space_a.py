@@ -42,7 +42,7 @@ from src.rtsp_reader import RTSPReader
 from src.detector import Detector
 from src.preprocessor import Preprocessor
 from src.tracker import CentroidTracker
-from src.roi_engine import ROIEngine, ensure_roi
+from src.roi_engine import ROIEngine, ensure_roi, draw_roi_for_test
 from src.event_manager import EventManager
 from src.visualizer import draw_detections, draw_tracked, draw_alert_bar, draw_warning_corner
 from src.utils import load_yaml, log
@@ -91,7 +91,9 @@ def _camera_worker(cam_cfg: dict, det_cfg: dict, out_cfg: dict,
                    space_a_cfg: dict,
                    frame_q: "queue.Queue | None",
                    stop: threading.Event,
-                   mode: str = "dev"):
+                   mode: str = "dev",
+                   test_rois: list[dict] | None = None,
+                   output_video_path: str | None = None):
     camera_id = cam_cfg["id"]
     tag = f"[Space A | {camera_id}]"
 
@@ -123,7 +125,9 @@ def _camera_worker(cam_cfg: dict, det_cfg: dict, out_cfg: dict,
 
     person_tracker = CentroidTracker(max_disappeared=30)
     object_tracker = CentroidTracker(max_disappeared=60)
-    roi    = ROIEngine(camera_id, ROI_RECORDS)
+    roi = (ROIEngine.from_rois(camera_id, test_rois)
+           if test_rois is not None
+           else ROIEngine(camera_id, ROI_RECORDS))
     events = EventManager(
         camera_id,
         snapshot_dir=out_cfg.get("snapshot_dir", "data/snapshots"),
@@ -138,6 +142,13 @@ def _camera_worker(cam_cfg: dict, det_cfg: dict, out_cfg: dict,
     _t0 = time.monotonic()
     detector.detect(np.zeros((h, w, 3), dtype=np.uint8))
     log("INFO", f"{tag} warmup 完成 ({time.monotonic()-_t0:.1f}s)，開始接收畫面")
+
+    writer = None
+    if output_video_path is not None and mode == "dev":
+        Path(output_video_path).parent.mkdir(parents=True, exist_ok=True)
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        writer = cv2.VideoWriter(output_video_path, fourcc, reader.get_fps(), (w, h))
+        log("INFO", f"{tag} 測試錄影輸出：{output_video_path}")
 
     skip_n        = max(1, det_cfg.get("inference_skip_frames", 1))
     frame_count   = 0
@@ -266,6 +277,8 @@ def _camera_worker(cam_cfg: dict, det_cfg: dict, out_cfg: dict,
             draw_alert_bar(frame, active_alerts[0])
         if has_abandoned:
             draw_warning_corner(frame)
+        if writer is not None:
+            writer.write(frame)
         if frame_q is not None:
             try:
                 frame_q.put_nowait((frame.copy(), status))
@@ -273,6 +286,9 @@ def _camera_worker(cam_cfg: dict, det_cfg: dict, out_cfg: dict,
                 pass
 
     reader.release()
+    if writer is not None:
+        writer.release()
+        log("INFO", f"{tag} 測試錄影已儲存：{output_video_path}")
     if frame_q is not None:
         frame_q.put(_DONE)
     log("INFO", f"{tag} 已停止")
@@ -302,13 +318,31 @@ def run(camera_ids: list[str] | None = None, source_override=None, mode: str = "
         cam_map[cid]["source"]  = source_override
         cam_map[cid].pop("fallback", None)
 
-    for cid in valid_ids:
-        ensure_roi(cid,
-                   source=cam_map[cid].get("source"),
-                   fallback=cam_map[cid].get("fallback"),
-                   records_path=ROI_RECORDS,
-                   scene_name="Space A",
-                   expected_types=["zone"])
+    # 測試模式（指定 --source）：每次重畫 ROI，不存檔；同時錄製偵測結果影片
+    # 正常模式（無 --source）：讀取已存 ROI，首次使用時引導設定
+    test_rois_map: dict[str, list[dict] | None]
+    out_video_map: dict[str, str | None]
+    if source_override is not None:
+        log("INFO", "[Space A] 測試影片模式：ROI 每次重新繪製，不寫入 roi_records.json")
+        stem = Path(str(source_override)).stem
+        ts   = time.strftime("%Y%m%d_%H%M%S")
+        test_rois_map = {}
+        out_video_map = {}
+        for cid in valid_ids:
+            test_rois_map[cid] = draw_roi_for_test(
+                source_override, cid, expected_types=["zone"])
+            out_video_map[cid] = str(
+                Path("data/test_recordings") / f"{stem}_{cid}_{ts}.mp4")
+    else:
+        test_rois_map  = {cid: None for cid in valid_ids}
+        out_video_map  = {cid: None for cid in valid_ids}
+        for cid in valid_ids:
+            ensure_roi(cid,
+                       source=cam_map[cid].get("source"),
+                       fallback=cam_map[cid].get("fallback"),
+                       records_path=ROI_RECORDS,
+                       scene_name="Space A",
+                       expected_types=["zone"])
 
     # 作業模式不需要 frame queue；開發者模式建立 queue
     frame_qs: dict[str, queue.Queue | None] = {
@@ -322,7 +356,8 @@ def run(camera_ids: list[str] | None = None, source_override=None, mode: str = "
         t = threading.Thread(
             target=_camera_worker,
             args=(cam_map[cid], det_cfg, out_cfg, space_a_cfg,
-                  frame_qs[cid], stop, mode),
+                  frame_qs[cid], stop, mode, test_rois_map[cid],
+                  out_video_map[cid]),
             name=f"SpaceA-{cid}",
             daemon=True,
         )

@@ -235,6 +235,33 @@ def ensure_roi(camera_id: str, source,
             print(f"{tag} {camera_id} ({roi_type}): 未繪製任何 ROI")
 
 
+def draw_roi_for_test(source, camera_id: str,
+                      expected_types: list[str] | None = None) -> list[dict]:
+    """
+    測試影片專用：每次都強制互動繪製 ROI，結果只存記憶體，不寫 roi_records.json。
+    """
+    tag = "[ROI | Test]"
+    types_to_draw = expected_types[:] if expected_types else ["zone"]
+    all_rois: list[dict] = []
+
+    for i, roi_type in enumerate(types_to_draw):
+        if i > 0:
+            try:
+                more = input(f"{tag} 繼續設定 {roi_type}？[Y/n]: ").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                break
+            if more not in ("y", "yes", ""):
+                break
+        print(f"{tag} 開啟 {roi_type} 繪製視窗（不儲存）…")
+        try:
+            rois = draw_roi_interactive(source, camera_id, roi_type=roi_type)
+            all_rois.extend(rois)
+        except RuntimeError as e:
+            print(f"{tag} 繪製失敗：{e}")
+
+    return all_rois
+
+
 def load_roi_records(records_path: str) -> dict:
     p = Path(records_path)
     if not p.exists():
@@ -281,8 +308,31 @@ class ROIEngine:
         self.camera_id = camera_id
         self.zones: list[dict] = []
         self.lines: list[dict] = []
-        self._line_states: dict[tuple, int] = {}  # (obj_id, line_id) -> side
+        self._line_states: dict[tuple, int] = {}
         self._load(records_path)
+
+    @classmethod
+    def from_rois(cls, camera_id: str, rois: list[dict]) -> "ROIEngine":
+        """從記憶體 ROI 列表建立（測試模式用，不讀 JSON 檔）。"""
+        engine = cls.__new__(cls)
+        engine.camera_id = camera_id
+        engine.zones = []
+        engine.lines = []
+        engine._line_states = {}
+        for r in rois:
+            if r.get("type") == "line":
+                engine.lines.append({
+                    "id": r["id"], "label": r["label"],
+                    "color": tuple(r["color"]),
+                    "points": [tuple(pt) for pt in r["points"]],
+                })
+            else:
+                engine.zones.append({
+                    "id": r["id"], "label": r["label"],
+                    "color": tuple(r["color"]),
+                    "polygon": np.array(r["points"], np.int32),
+                })
+        return engine
 
     def _load(self, records_path: str):
         records = load_roi_records(records_path)

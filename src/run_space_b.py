@@ -30,7 +30,7 @@ from src.rtsp_reader import RTSPReader
 from src.detector import Detector
 from src.preprocessor import Preprocessor
 from src.tracker import CentroidTracker
-from src.roi_engine import ROIEngine, ensure_roi
+from src.roi_engine import ROIEngine, ensure_roi, draw_roi_for_test
 from src.event_manager import EventManager
 from src.visualizer import draw_detections, draw_tracked, draw_alert_bar
 from src.utils import load_yaml, log
@@ -87,16 +87,32 @@ def run(source=None, mode: str = "dev"):
     log("INFO", f"[Space B] 啟動 [mode={mode}]  source={src}")
     log("INFO", "[Space B] 聲音事件偵測：MVP 版本為佔位模式（YOHO 尚未整合）")
 
-    ensure_roi(CAMERA_ID,
-               source=src,
-               fallback=fallback,
-               records_path=ROI_RECORDS,
-               scene_name="Space B",
-               expected_types=["zone"])
+    if source is not None:
+        log("INFO", "[Space B] 測試影片模式：ROI 每次重新繪製，不寫入 roi_records.json")
+        test_rois = draw_roi_for_test(src, CAMERA_ID, expected_types=["zone"])
+    else:
+        test_rois = None
+        ensure_roi(CAMERA_ID,
+                   source=src,
+                   fallback=fallback,
+                   records_path=ROI_RECORDS,
+                   scene_name="Space B",
+                   expected_types=["zone"])
 
     reader = RTSPReader(src, fallback=fallback)
     if not reader.open():
         return
+
+    writer = None
+    if source is not None and mode == "dev":
+        w_vid, h_vid = reader.get_size()
+        stem     = Path(str(src)).stem
+        ts       = time.strftime("%Y%m%d_%H%M%S")
+        out_path = Path("data/test_recordings") / f"{stem}_{ts}.mp4"
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        fourcc   = cv2.VideoWriter_fourcc(*"mp4v")
+        writer   = cv2.VideoWriter(str(out_path), fourcc, reader.get_fps(), (w_vid, h_vid))
+        log("INFO", f"[Space B] 測試錄影輸出：{out_path}")
 
     pre = Preprocessor.from_config(det_cfg.get("preprocess", {}))
     if not pre.is_noop:
@@ -111,7 +127,9 @@ def run(source=None, mode: str = "dev"):
     )
 
     tracker = CentroidTracker(max_disappeared=25)
-    roi     = ROIEngine(CAMERA_ID, ROI_RECORDS)
+    roi = (ROIEngine.from_rois(CAMERA_ID, test_rois)
+           if test_rois is not None
+           else ROIEngine(CAMERA_ID, ROI_RECORDS))
     events  = EventManager(
         CAMERA_ID,
         snapshot_dir=out_cfg.get("snapshot_dir", "data/snapshots"),
@@ -204,6 +222,8 @@ def run(source=None, mode: str = "dev"):
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
         if active_alerts:
             draw_alert_bar(frame, active_alerts[0], color=(180, 0, 0))
+        if writer is not None:
+            writer.write(frame)
 
         preview = cv2.resize(frame, None, fx=display_scale, fy=display_scale)
         cv2.imshow("CSAS PoC — Space B (樓梯/通道)", preview)
@@ -211,6 +231,9 @@ def run(source=None, mode: str = "dev"):
             break
 
     reader.release()
+    if writer is not None:
+        writer.release()
+        log("INFO", f"[Space B] 測試錄影已儲存：{out_path}")
     if mode == "dev":
         cv2.destroyAllWindows()
     log("INFO", "[Space B] 已停止")

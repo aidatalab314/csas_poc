@@ -2,7 +2,7 @@
 
 ## ROI 設定
 
-### 自動 ROI 檢查（啟動時）
+### 正常模式（無 `--source`）— 自動 ROI 檢查
 
 每個 run script 啟動時會自動檢查攝影機是否有 ROI 設定，若無則引導互動設定：
 
@@ -17,6 +17,31 @@
 ```
 
 > **視窗關閉後**請立即回到終端機，程式會繼續等待輸入。
+
+設定完成後寫入 `configs/roi_records.json`，下次啟動直接沿用。
+
+---
+
+### 測試影片模式（有 `--source`）— 每次重畫，不存檔
+
+指定 `--source` 時系統自動進入測試模式，行為如下：
+
+- ROI **每次**都強制重新互動繪製，繪製完成後直接投入記憶體使用
+- **不寫入** `roi_records.json`，正式 RTSP 攝影機的 ROI 不受影響
+- 偵測結果影片自動錄製並儲存至 `data/test_recordings/`
+
+```
+[Space A] 測試影片模式：ROI 每次重新繪製，不寫入 roi_records.json
+[ROI | Test] 開啟 zone 繪製視窗（不儲存）…
+```
+
+影片結束後 log 輸出儲存路徑：
+
+```
+[Space A | camera_a] 測試錄影已儲存：data/test_recordings/panic_video_camera_a_20260610_152411.mp4
+```
+
+檔名格式：`{影片名}_{camera_id}_{時間}.mp4`（Space B/C 無 `camera_id` 段）
 
 ### 手動設定（scripts/setup_roi.py）
 
