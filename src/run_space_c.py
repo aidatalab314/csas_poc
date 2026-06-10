@@ -173,12 +173,21 @@ def run(source=None, mode: str = "dev"):
 
         active_alerts: list[str] = []
 
+        # snapshot 用的標注幀：ROI + 偵測框 + 追蹤 ID 先畫上去
+        snap_frame = frame.copy()
+        roi.draw(snap_frame)
+        draw_detections(snap_frame, cached_person_dets, color=(0, 220, 0))
+        draw_detections(snap_frame, cached_object_dets, color=(0, 165, 255))
+        draw_tracked(snap_frame, tracked_persons)
+
         # ── 規則 1：人員跨越警戒線 ────────────────────────────────────────────
         for obj_id, obj in tracked_persons.items():
             cx, cy = obj["cx"], obj["cy"]
             conf   = obj["det"].get("conf", 0.5)
             for line_label in roi.check_line_crossing(obj_id, cx, cy):
-                if events.trigger("line_crossing", line_label, "high", conf, frame):
+                _draw_intrusion_highlight(snap_frame, obj["det"],
+                                          f"CROSS {line_label}", (0, 0, 255))
+                if events.trigger("line_crossing", line_label, "high", conf, snap_frame):
                     active_alerts.append(f"LINE CROSS: person ID:{obj_id} → {line_label}")
                     if mode == "dev":
                         _draw_intrusion_highlight(frame, obj["det"],
@@ -189,7 +198,9 @@ def run(source=None, mode: str = "dev"):
             cx, cy = obj["cx"], obj["cy"]
             conf   = obj["det"].get("conf", 0.5)
             for zone_label in roi.get_zone_labels(cx, cy):
-                if events.trigger("zone_intrusion", zone_label, "high", conf, frame):
+                _draw_intrusion_highlight(snap_frame, obj["det"],
+                                          f"INTRUSION {zone_label}", (0, 0, 200))
+                if events.trigger("zone_intrusion", zone_label, "high", conf, snap_frame):
                     active_alerts.append(f"INTRUSION: person ID:{obj_id} in {zone_label}")
                     if mode == "dev":
                         _draw_intrusion_highlight(frame, obj["det"],
@@ -201,12 +212,15 @@ def run(source=None, mode: str = "dev"):
             conf   = obj["det"].get("conf", 0.5)
             label  = obj["det"].get("label", "object")
             for line_label in roi.check_line_crossing(f"obj_{obj_id}", cx, cy):  # type: ignore[arg-type]
-                if events.trigger("large_object_line_crossing", line_label, "high", conf, frame):
+                _draw_intrusion_highlight(snap_frame, obj["det"], "OBJ CROSS", (0, 80, 255))
+                if events.trigger("large_object_line_crossing", line_label, "high", conf, snap_frame):
                     active_alerts.append(f"OBJ CROSS: {label} ID:{obj_id} → {line_label}")
                     if mode == "dev":
                         _draw_intrusion_highlight(frame, obj["det"], "OBJ CROSS", (0, 80, 255))
             for zone_label in roi.get_zone_labels(cx, cy):
-                if events.trigger("large_object_intrusion", zone_label, "high", conf, frame):
+                _draw_intrusion_highlight(snap_frame, obj["det"],
+                                          f"OBJ IN {zone_label}", (0, 80, 255))
+                if events.trigger("large_object_intrusion", zone_label, "high", conf, snap_frame):
                     active_alerts.append(f"OBJ INTRUSION: {label} ID:{obj_id} in {zone_label}")
                     if mode == "dev":
                         _draw_intrusion_highlight(frame, obj["det"],

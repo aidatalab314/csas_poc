@@ -209,10 +209,17 @@ def _camera_worker(cam_cfg: dict, det_cfg: dict, out_cfg: dict,
 
         active_alerts: list[str] = []
 
+        # snapshot 用的標注幀：ROI + 偵測框 + 追蹤 ID 先畫上去
+        snap_frame = frame.copy()
+        roi.draw(snap_frame)
+        draw_detections(snap_frame, person_in_roi, color=(0, 255, 0))
+        draw_detections(snap_frame, object_in_roi, color=(0, 165, 255))
+        draw_tracked(snap_frame, tracked_persons)
+
         # 規則 1：人流密度
         for zone_label, count in zone_counts.items():
             if count >= crowd_threshold:
-                events.trigger("crowd_density_alert", zone_label, "medium", 1.0, frame)
+                events.trigger("crowd_density_alert", zone_label, "medium", 1.0, snap_frame)
                 active_alerts.append(f"CROWD {zone_label}: {count} persons")
 
         # 規則 2：滯留物
@@ -222,9 +229,12 @@ def _camera_worker(cam_cfg: dict, det_cfg: dict, out_cfg: dict,
             dwell  = obj["dwell_seconds"]
             label  = obj["det"].get("label", "object")
             conf   = obj["det"].get("conf", 0.5)
+            x1, y1, x2, y2 = obj["det"]["bbox"]
+            color = (0, 50, 255) if dwell >= abandoned_secs else (0, 165, 255)
+            cv2.rectangle(snap_frame, (x1, y1), (x2, y2), color, 2)
+            cv2.putText(snap_frame, f"{label} {dwell:.0f}s",
+                        (x1, y1 - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
             if mode == "dev":
-                x1, y1, x2, y2 = obj["det"]["bbox"]
-                color = (0, 50, 255) if dwell >= abandoned_secs else (0, 165, 255)
                 cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
                 cv2.putText(frame, f"{label} {dwell:.0f}s",
                             (x1, y1 - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
@@ -233,7 +243,7 @@ def _camera_worker(cam_cfg: dict, det_cfg: dict, out_cfg: dict,
                     has_abandoned = True
                     zone_labels = roi.get_zone_labels(cx, cy) or ["zone_a"]
                     if events.trigger("abandoned_object", zone_labels[0],
-                                      "high", conf, frame):
+                                      "high", conf, snap_frame):
                         active_alerts.append(f"ABANDONED: {label} ID:{obj_id}")
 
         # 規則 3：異常移動
@@ -243,6 +253,7 @@ def _camera_worker(cam_cfg: dict, det_cfg: dict, out_cfg: dict,
             prev = prev_pos.get(obj_id)
             if prev and math.hypot(cx - prev[0], cy - prev[1]) > speed_px:
                 fast.append(obj_id)
+                cv2.arrowedLine(snap_frame, prev, (cx, cy), (0, 0, 255), 2)
                 if mode == "dev":
                     cv2.arrowedLine(frame, prev, (cx, cy), (0, 0, 255), 2)
             prev_pos[obj_id] = (cx, cy)
@@ -257,7 +268,7 @@ def _camera_worker(cam_cfg: dict, det_cfg: dict, out_cfg: dict,
                     labels = roi.get_zone_labels(obj["cx"], obj["cy"])
                     fast_zones.update(labels if labels else ["full_frame"])
             for zone_label in (fast_zones or {"full_frame"}):
-                events.trigger("abnormal_movement", zone_label, "medium", 0.8, frame)
+                events.trigger("abnormal_movement", zone_label, "medium", 0.8, snap_frame)
             active_alerts.append(f"FAST MOVE: {len(fast)} persons")
 
         # ── 作業模式：定期 log 狀態，警報即時輸出 ────────────────────────────

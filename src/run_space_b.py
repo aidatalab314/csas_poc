@@ -191,16 +191,23 @@ def run(source=None, mode: str = "dev"):
         roi_labels    = [z["label"] for z in roi.zones] or ["zone_b"]
         active_alerts: list[str] = []
 
+        # snapshot 用的標注幀：ROI + 偵測框 + 追蹤 ID + 速度 overlay 先畫上去
+        snap_frame = frame.copy()
+        roi.draw(snap_frame)
+        draw_detections(snap_frame, cached_dets)
+        draw_tracked(snap_frame, tracked)
+        _draw_speed_overlay(snap_frame, current_speeds, tracked, rush_speed)
+
         # ── 規則 1：群眾恐慌性移動 ────────────────────────────────────────────
         fast_persons = [oid for oid, spd in current_speeds.items() if spd > rush_speed]
         if len(fast_persons) >= rush_count:
             events.trigger("crowd_rush", roi_labels[0], "high",
-                           min(1.0, len(fast_persons) / rush_count), frame)
+                           min(1.0, len(fast_persons) / rush_count), snap_frame)
             active_alerts.append(f"CROWD RUSH {roi_labels[0]}: {len(fast_persons)} persons")
 
         # ── 規則 2：通道擁擠 ──────────────────────────────────────────────────
         if len(tracked) >= congestion_count:
-            events.trigger("congestion_alert", roi_labels[0], "medium", 1.0, frame)
+            events.trigger("congestion_alert", roi_labels[0], "medium", 1.0, snap_frame)
             active_alerts.append(f"CONGESTION {roi_labels[0]}: {len(tracked)} persons")
 
         _audio_placeholder()
